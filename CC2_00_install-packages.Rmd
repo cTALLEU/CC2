@@ -1,0 +1,46 @@
+---
+title: "Installation des packages"
+output:
+  github_document:
+    toc: yes
+    toc_depth: 2
+---
+
+# update VM configuration
+``` {bash}
+sudo apt-get update -y 
+sudo apt-get install -y libbz2-dev
+sudo apt-get install -y liblzma-dev
+```
+
+# Instalation des packages
+
+Suivre les instruction sur le site https://benjjneb.github.io/dada2/dada-installation.html
+
+```{r package install}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install(version = '3.11')
+BiocManager::install("dada2", version = "3.11")
+```
+
+```{r}
+library("knitr")
+library("BiocManager")
+.cran_packages <- c("ggplot2", "gridExtra")
+.bioc_packages <- c("dada2", "phyloseq", "DECIPHER", "phangorn")
+.inst <- .cran_packages %in% installed.packages()
+if(any(!.inst)) {
+   install.packages(.cran_packages[!.inst])
+}
+.inst <- .bioc_packages %in% installed.packages()
+if(any(!.inst)) {
+   BiocManager::install(.bioc_packages[!.inst], ask = F)
+}
+# Load packages into session, and print package version
+sapply(c(.cran_packages, .bioc_packages), require, character.only = TRUE)
+```
+
+remarque: 
+phyloseq installé depuis le terminal 
+sudo apt-get install libglpk-dev

@@ -1,0 +1,298 @@
+---
+title: "Analyses Phyloseq des données de la Rade de Brest"
+output:
+  github_document:
+    toc: yes
+    toc_depth: 2
+---
+
+# Ouverture des librairies
+
+On va ouvrir toutes les librairies qui seront necessaire au fonctionnement de ce script et donc de nos analyses (on completera cette partie au fur et a mesure que l'on avance dans le script).
+
+```{r, results="hide"}
+library(knitr)
+library(rmarkdown)
+```
+
+```{r, results="hide"}
+library(ggplot2)
+library(phyloseq); packageVersion("phyloseq")
+library(Biostrings); packageVersion("Biostrings")
+```
+
+```{r, results="hide"}
+library(dada2)
+```
+
+
+Remarque:
+Toutes les installations ont ete realisee dans un autre script (CC2_00_install-packages) de même que l'importation des donnees (CC2_01_data-import) afin de ne pas surcharger celui-ci. 
+
+# Preparation
+
+```{r, results="hide"}
+miseq_path <- "./St_Stratif_10sept14" # CHANGE to the directory containing the fastq files after unzipping.
+list.files(miseq_path)
+```
+
+```{r, results="hide"}
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+fnFs <- sort(list.files(miseq_path, pattern="_R1.fastq", full.names = TRUE))
+fnRs <- sort(list.files(miseq_path, pattern="_R2.fastq", full.names = TRUE))
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "R"), `[`, 1)
+```
+
+# Inspection du profil de qualite des reads
+
+Lorsque que l'on séquence avec Illumina, à chaque base ajoutée, on va y associer un score de qualité ou Qscore (par exemple la chance d'avoir un C si la base est un C) qui va évoluer au cours du séquencage.
+
+Les fowards:
+```{r}
+plotQualityProfile(fnFs[1:2])
+```
+Les reverses:
+```{r}
+plotQualityProfile(fnRs[1:2])
+```
+
+On remarque que le score de qualité est plus bas dans les premiers nucleotides. Il remonte ensuite et va de nouveau chuter au cours du sequençage. 
+
+On va donc troncater quand le score de qualite va tomber en dessous de 30, se sera donc à la position 250 pour les forwards et à la position 200 pour les reverses
+On va egalement devoir retirer l'amorce presente sur les fowards. 
+
+# Filtrer et couper
+
+```{r, results="hide"}
+filt_path <- file.path(miseq_path, "filtered") # Place filtered files in filtered/ subdirectory
+if(!file_test("-d", filt_path)) dir.create(filt_path)
+filtFs <- file.path(filt_path, "filtered", paste0(sample.names, "_Ffilt.fastq.gz"))
+filtRs <- file.path(filt_path, "filtered", paste0(sample.names, "_Rfilt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+```
+
+```{r, results="hide"}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(250,200), trimLeft =21,
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=TRUE)
+head(out)
+```
+# Taux d'erreur
+
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+```
+```{r}
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+
+```{r}
+plotErrors(errF, nominalQ=TRUE)
+```
+
+# Interferences des echantillons
+
+```{r, results="hide"}
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+```
+
+```{r, results="hide"}
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
+```
+
+# Appariment des reads complémentaires
+
+On va apparier les fowards avec leur reverses complementaires. 
+Si nous n'avons pas de correspondence parfaite, ils seront retires des donnees.
+
+```{r, results="hide"}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+```
+
+# Construction de la table de sequence
+
+On prepare la table. 
+
+```{r}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+```
+```{r}
+# Inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab)))
+```
+La premiere ligne donne la taille des sequences, la deuxieme donne le nombre de sequence presentant cette taille. 
+
+# Supression des chimeres
+
+```{r, results="hide"}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+```
+
+```{r}
+sum(seqtab.nochim)/sum(seqtab)
+```
+# Suivie de l'affinement de notre set de donnees final
+
+On va suivre a chaque etape le nombre de sequence qui n'ont pas ete filtre et donc retire de notre set de donnees. On fait un suivi du traitement des données.
+
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+
+# Assignation de la taxonomie
+
+```{bash, results="hide"}
+wget https://zenodo.org/record/3986799/files/silva_nr99_v138_train_set.fa.gz?download=1
+```
+
+```{r, results="hide"}
+taxa <- assignTaxonomy(seqtab.nochim,"~/silva_nr99_v138_train_set.fa.gz?download=1", multithread = TRUE)
+```
+
+```{r, results="hide"}
+taxa <- addSpecies(taxa, "~/silva_species_assignment_v138.fa.gz?download=1")
+```
+
+```{r}
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+
+
+# Analyses phyloseq
+
+## Alpha-diversite
+
+```{r, results="hide"}
+theme_set(theme_bw())
+```
+
+```{r, results="hide"}
+samples.out <- rownames(seqtab.nochim)
+subject <- samples.out
+echantillon <- substr(subject,10,30)
+subject <- substr(subject,10,30)
+samples.out2 <- samples.out
+samples.out2[c(1, 3, 5, 6, 7, 8, 10)] <- 2014
+samples.out2[c(2, 4, 9, 11)] <- 2015
+samples.out3 <- samples.out
+samples.out3[c(1, 3, 5, 2, 4)] <- "fond"
+samples.out3[c(6, 7)] <- "median"
+samples.out3[c(8, 9, 10, 11)] <- "surface"
+profondeur <- samples.out3
+year <- as.integer(samples.out2)
+samdf <- data.frame(Subject=subject, Echantillon=echantillon, Year=year, Profondeur=profondeur)
+samdf$When <- "10sept14"
+samdf$When[samdf$Year == "2015"] <- "11mars15"
+rownames(samdf) <- samples.out
+```
+
+```{r, results="hide"}
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(samdf), 
+               tax_table(taxa))
+ps <- prune_samples(sample_names(ps) != "Mock", ps) # Remove mock sample
+```
+
+```{r}
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+```
+On va calculer des indices d'alpha diversite: Shannon et Simpson. 
+
+```{r}
+plot_richness(ps, x="Echantillon", measures=c("Shannon", "Simpson"), color="When")
+```
+
+L'indice de Shannon, comme l'indice de Simpson, va nous donner des informations sur la diversite au sein de nos donnees, mais il va egalement inclure un facteur d'abondance. 
+
+A la vu de ces deux graphes, on remarque que les deux indices suivent un meme paterne. De plus, si ils restent approximativement constant a la fin de l'hiver, on remarque qu'il vont grandement varier en fonction de la profondeur a la fin de l'ete, avec des indices d'alpha diversite qui vont evoluer inversement a la profondeur. 
+Il doit donc avoir un effet de la saisonalite sur la diversite presente dans cette zone (la Rade de Brest). 
+
+On peut egalement le faire en fonction de la profondeur pour preciser une veritable image de la diversite en fonction de ce facteur. 
+
+
+```{r}
+plot_richness(ps, x="Profondeur", measures=c("Shannon", "Simpson"), color="When")
+```
+Les differences observes precedement, en fonction de la profondeur, sont encore plus flagrantes ici. 
+
+
+## Beta-diversite
+
+On va maitenant faire une pCoA (indice de beta diversite). 
+Les points vont êtres places les uns en fonction des autres. On ajoute donc des relations. 
+
+```{r}
+pslog <- transform_sample_counts(ps, function(x) log(1 + x))
+out.wuf.log <- ordinate(pslog, method = "PCoA", distance = "bray")
+```
+
+```{r}
+evals <- out.wuf.log$values$Eigenvalues
+plot_ordination(pslog, out.wuf.log, color = "Profondeur", shape="When") +
+labs(col = "Profondeur",shape= "When") 
+```
+
+On remarque la presence de plusieurs cluster et donc de groupes avec des similarites (points rapproches les uns des autres). 
+
+Ces resultats confirment une certaine saisonnalite car si les donnees issues du prelevement a la fin de l'hiver se rassemble au sein d'un même cluster, peu importe la profondeur, c'est autre chose pour celle datant de la fin de l'ete. On retrouve pour ces dernieres 3 clusters differents, avec celui de la profondeur mediane se rapprochant plus de celle du fond que de celle de la surface. 
+
+Il y aurai donc bien une influence de facteurs issus de la saisonnalite sur la diversite des populations (certainement des facteurs environnementaux tels que la temperature ou le rayonnement UV). 
+
+
+## Determination de biomarqueurs
+
+Un biomarqueur est une caracteristique biologique mesurable. 
+Il va nous servir afin de detecter des changements ou evolutions au sein d'un milieu. 
+
+```{r}
+top20 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:20]
+ps.top20 <- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+ps.top20 <- prune_taxa(top20, ps.top20)
+plot_bar(ps.top20, x="Echantillon", fill="Family") + facet_wrap(~When, scales="free_x")
+```
+
+Les clades I et II sont constant au cours du temps et de la profondeur, ils ne sont donc pas impactes par les facteurs environnementaux decrit precedemment. 
+Par contre, les Cyanoblaceae et les Thioglobaceae sont grandement impactes par ces changements. Ils vont respectivement voir leur abondance augmenter ou baisser en ete et inversement en hiver. Se sont donc des marqueurs de ce changement de conditions entre les deux saisons. 
+
+On remarque de plus une similarite entre le fond en ete et toutes les profondeurs en hiver. 
+
+
+```{r}
+top20 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:20]
+ps.top20 <- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+ps.top20 <- prune_taxa(top20, ps.top20)
+plot_bar(ps.top20, x="Echantillon", fill="Genus") + facet_wrap(~When, scales="free_x")
+```
+
+On peut voir que si certains genres sont constants entre fin ete et fin hiver, comme Clade Ia, NS4 marine group ou dans une certaine proportion Candidatus Actinomarina. D'autres ne sont présents, ou du moins dans une grande abondance qu'au cours de l'ete. C'est notamment le cas de Synechococcus CC9902 ou Ascidiacethabitans. 
+
+Synechococcus CC9902 peut donc être un bon marqueur du passage d'une saison a une autre. 
+Clade Ia est lui tout le temps present que se soit en profondeur ou en saison, on peut donc l'utiliser comme marqueur afin de detecter des changements dans le milieu, tel qu'une pollution par exemple, mais pour cela, il faudrai etudier son comportement en fonction de facteurs de pollution par exemple.
+
+
+On confirme egalement la ressemblance entre l'abondance dans les fonds en ete et a toutes les profondeurs en hiver. 
+On peut donc dire que seules les couches medianes et de surfaces vont avoir des changements au cours de l'annee, et donc sous l'influence des facteurs environnemmentaux dus a la saisonnalite. 
+
+
+# Conclusion 
+
+Au sein de la Rade de Brest, on peut observer une saisonalite de la diversite. Si en profondeur, les variations environnementales en fonction des saisons ne se font pas tellement resentir, c'est different en surface où la variation de facteurs tels que surement le rayonnement UV ou la temperature ont un impact. 
+
+Afin de completer l'etude, on aurai pu aquerir d'autres donnes, tels que les mesure de temperature et de rayonnement justement afin de confirmer le potentiel impact sur la diversite. Il aurai egalement ete plus pertinant de donne des precision sur la profondeur de l'echantillonnage (en metre) afin de pourvoir les corroler avec les autres facteurs plus precisement. 

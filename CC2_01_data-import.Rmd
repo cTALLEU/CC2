@@ -1,0 +1,29 @@
+---
+title: "Import des data de la Rade de Brest"
+output:
+  github_document:
+    toc: yes
+    toc_depth: 2
+---
+
+# ouverture des libraries  
+
+```{r}
+library(knitr)
+library(rmarkdown)
+```
+
+
+# import des data de la Rade de Brest
+
+```{bash}
+wget https://pagesperso.univ-brest.fr/~maignien/teaching/M1-MFA/UE-Ecogenomique2/EcoG2_data_cc2.tar.gz
+```
+
+le code suivant a servir a décompresser les data
+
+```{bash}
+tar xvzf EcoG2_data_cc2.tar.gz
+```
+
+il ne faut pas oublier de mettre les donnees dans un meme dossier afin de pouvoir les traiter correctement par la suite.Ici, on les a tous mis dans le dossier St_Statif_10sept14
