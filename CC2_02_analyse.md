@@ -119,7 +119,7 @@ fnRs <- sort(list.files(miseq_path, pattern="_R2.fastq", full.names = TRUE))
 sample.names <- sapply(strsplit(basename(fnFs), "R"), `[`, 1)
 ```
 
-# Inspection du profil de qualite des reads
+# Inspection du profil de qualite des reads 
 
 Lorsque que l’on séquence avec Illumina, à chaque base ajoutée, on va y
 associer un score de qualité ou Qscore (par exemple la chance d’avoir un
